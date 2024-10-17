@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resume</title>
+    <link rel="stylesheet" href="css/bootstrap.min.css" />
+    <script src="js/nez.js"></script>
+  </head>
+  <body class="container-fluid border shadow"
+        nez-root
+        nez-data-bs-theme="light"
+    >
+
+    <main nez class="p-3">
+      <div nez 
+        let-full_name="Natnael Eshetu"
+        let-address="Addis Abeba, Ethiopia"
+        let-phone="0906639085"
+        let-email="the.defalt8@gmail.com"
+      >
+        <section nez>
+          <div nez class="h2">{this.full_name}</div>
+          <p nez class="">{this.address} | {this.phone} | 
+            <a nez href="mailto:{this.email}">{this.email}</a>
+          </p>
+        </section>
+        <section nez>
+          <div nez class="h3">Summary</div>
+          <p nez>
+            An experienced programmer and a junior web developer with 5+ years of experience looking forward to working with others.
+            Javascript and Node.js frameworks are my main focus.
+          </p>
+        </section>
+        <section>
+          <div class="h3">Education</div>
+          <p>Bsc. Degree at Adama Science and Technology University [3rd year/5 years]</p>
+          <p>Self Taught at 
+            <a href="https://www.w3schools.com/">w3schools</a> and
+            <a href="https://www.freecodecamp.org/">freecodecamp</a>
+          </p>
+        </section>
+        <section>
+          <div class="h3">Experience</div>
+          <div class="d-flex justify-content-between">
+            <p><b>Student</b></p>
+            <p><b>2019 - Current</b></p>
+          </div>
+          <ul>
+            <li>Solve programming problems using data structure and algorithms.</li>
+            <li>Use functional and object oriented programming to write clear and efficient code.</li>
+            <li>Design an efficient database using MySQL Workbench.</li>
+            <li>Design and develop software using agile method and learned software engineering techniques.</li>
+            <li>Write an login, logout, and mock API using Hapi.js</li>
+            <li>Use bootstrap to design responsive and good looking web-pages and forms.</li>
+          </ul>
+        </section>
+        <section>
+          <div class="h3">Skills</div>
+          <ul>
+            <li>JavaScript</li>
+            <li>HTML 5 and CSS 3</li>
+            <li>SQL</li>
+            <li>Java</li>
+            <li>C++</li>
+            <li>git and GitHub</li>
+            <li>VsCode</li>
+            <li>Teamwork</li>
+          </ul>
+        </section>
+        <section>
+          <div class="h3">Certification</div>
+          <p>freeCodeCamp Legacy JavaScript Algorithms and Data Structures
+          <img alt="freecodecamp-javascript-dsa-certificate" 
+            src="media/image/freecodecamp-js-dsa-certificate.png"
+            class="w-100"
+            title="freecodecamp-javascript-dsa-certificate"
+          />
+          </p>
+        </section>
+      </div>
+    </main>
+
+    <script src="js/jquery-3.7.1.slim.min.js"></script>
+    <script src="js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>

@@ -1,0 +1,856 @@
+
+/**
+ * 
+ * 
+ */
+
+// -> if
+// -> for
+// -> fetch-async
+// -> fetch-sync
+// -> html
+// -> let-async-
+// -> let-sync-
+// -> let-
+// -> nez-on-
+// -> nez-data-
+// -> nez-set-if-
+// -> nez-
+
+const Variable = function(name, value) {
+    this.name  = name;
+    this.value = value;
+    this.updateClients = new Set();
+    return this;
+};
+
+const FetchError = function(url, status, statusText) {
+    this.url        = url;
+    this.status     = status;
+    this.statusText = statusText;
+    return this;
+};
+
+const ContextExecutor = function(nez) {
+    const this_ = this;
+    this.variables = new Map();
+    this.nez = nez;
+    this.updateContextVariables = function() {
+        for(variable of this_.variables) {
+            if(typeof this[variable.name] !== undefined) {
+                variable.value = this[variable.name];
+            }
+        }
+    };
+    this.execute = function(code, component) {
+        try {
+            const result = eval(code);
+            this_.updateContextVariables();
+            return result;
+        } catch(error) {
+            console.error(error);
+            console.error('CODE: \n'+code);
+            console.warn(component);
+            throw error;
+        }
+    };
+    this.executeAsync = async function(code, component) {
+        try {
+            const result = await eval(code);
+            this_.updateContextVariables();
+            return result;
+        } catch(error) {
+            console.error(error);
+            console.error('CODE: \n'+code);
+            console.warn(component);
+            throw error;
+        }
+    };
+    this.executeEvent = function(code, event, component) {
+        try {
+            const result = eval(code);
+            this_.updateContextVariables();
+            return result;
+        } catch(error) {
+            console.error(error);
+            console.error('CODE: \n'+code);
+            console.warn(component);
+            throw error;
+        }
+    };
+    this.setVariable = function(variableName, variableValue) {
+        if(this_.variables.has(variableName))
+            this_.variables.get(variableName).value = variableValue;
+        else
+            this_.variables.set(variableName, new Variable(variableName, variableValue));
+        this_[variableName] = variableValue;
+        this_.reprocessUpdateClientComponents([variableName]);
+        return this_.variables.get(variableName);
+    };
+    this.setNewVariable = function(variableName, variableValue) {
+        this_.variables.set(variableName, new Variable(variableName, variableValue));
+        this_[variableName] = variableValue;
+        this_.reprocessUpdateClientComponents([variableName]);
+        return this_.variables.get(variableName);
+    };
+    this.setObjVariable = function(variable) {
+        this_.variables.set(variable.name, variable);
+        this_[variable.name] = variable.value;
+        return this_.variables.get(variable.name);
+    };
+    this.getVariable = function(variableName) {
+        return this_.variables.get(variableName);
+    };
+    this.removeVariable = function(variableName) {
+        if(this_.variables.has(variableName)) {
+            delete this_[variableName];
+            this_.variables.delete(variableName);
+            this_.reprocessUpdateClientComponents([variableName]);
+        }
+    };
+    this.containsVariable = function(variableName) {
+        return this_.variables.has(variableName);
+    };
+    this.addVariableUpdateClient = function(updateClient, variableName) {
+        if(this_.variables.has(variableName)) {
+            this_.variables.get(variableName).updateClients.add(updateClient);
+            return true;
+        } else {
+            console.warn('referencing an undeclared variable'+
+                "\n -> ", variableName);
+        }
+        return false;
+    };
+    this.reprocessUpdateClientComponents = function(variableNames) {
+        // update update client components
+        const updateClientSet = new Set();
+        for(let variableName of variableNames) {
+            if(this_.variables.has(variableName)) {
+                const variable = this_.variables.get(variableName);
+                for(let updateClient of variable.updateClients)
+                    updateClientSet.add(updateClient);
+            }
+        }
+        for(let updateClient of updateClientSet) {
+            updateClient.dataset['nez_updated'] = 'true';
+            updateClient.querySelectorAll('[nez]').forEach(function(child) {
+                child.dataset['nez_updated'] = 'true';
+            });
+            this_.nez.processComponent(updateClient, this_);
+        }
+    }
+};
+
+const NezObserver = function(nez) {
+    const this_ = this;
+    this.nez = nez;
+    this.callback = function(mutationList, observer) {
+        for(const mutation of mutationList) {
+            const target = mutation.target;
+            if(target.attributes.getNamedItem('nez-root')
+            && target.dataset['nez_init'] === undefined)
+                observer.nez.process(target);
+        }
+    };
+    const observer = new MutationObserver(this.callback);
+    observer.nezObserver = this;
+    observer.nez = nez;
+    this.observer = observer;
+    this.startObserving = function() {
+        if(!this_.observing) {
+            const config = { 
+                attributes: true,
+                attributeFilter: ['nez-root', 'nez'], 
+                childList: true, 
+                subtree: true 
+            };
+            this_.observer.observe(document, config);
+            this_.observing = true;
+        }
+    };
+    this.stopObserving = function() {
+        if(this_.observing) {
+            this_.observer.disconnect();
+            this_.observing = false;
+        }
+    };
+    this.isObserving = function() {
+        this_.observing;
+    };
+    return this;
+};
+
+const Nez = function() {
+    const this_ = this;
+    this.zeroWidthWhiteSpace = "\u200B";
+    this.contextExecutor     = new ContextExecutor(this);
+    this.observer            = new NezObserver(this);
+    const processComponent   = async function(component, contextExecutor) {
+        // process and handle set attributes
+        if(component.dataset['nez_updated'] === undefined)
+            component.dataset['nez_updated'] = 'true';
+        const componentInitialized = component.dataset['nez_init'] !== undefined;
+        const componentUpdated     = component.dataset['nez_updated'] !== 'false';
+        component.dataset['nez_init'] = true;
+        const savedVariables = new Set();
+        const scopeVariables = new Set();
+        const findAndAddUpdateClients = function(code, component, contextExecutor) {
+            const variableNames = code.match(/this\.[a-zA-Z_][\w]*/gs);
+            if(variableNames) {
+                const variableNamesSet = new Set();
+                for(let thisVariableName of variableNames)
+                    variableNamesSet.add(thisVariableName.substring(5));
+                for(let variableName of variableNamesSet)
+                    contextExecutor.addVariableUpdateClient(component, variableName);
+            }
+        };
+        for(let attribute of component.attributes) {
+            // if condition
+            if(attribute.name.indexOf('if') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'if')
+                    continue;
+                component.dataset['nez_current'] = 'if';
+                if(attribute.value.length > 2) {
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    if(!componentInitialized)
+                        component.dataset['nez_html'] = component.innerHTML;
+                    const html = component.dataset['nez_html'];
+                    component.innerHTML = '';
+                    const condition = contextExecutor.execute(code, component);
+                    if(condition)
+                        component.innerHTML = html;
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            } 
+            // for loop
+            if(attribute.name.indexOf('for') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'for')
+                    continue;
+                component.dataset['nez_current'] = 'for';
+                if(attribute.value.length > 2) {
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    if(!componentInitialized)
+                        component.dataset['nez_html'] = component.innerHTML;
+                    const html = component.dataset['nez_html'];
+                    component.innerHTML = '';
+                    const match = code.matchAll(/let\s+([a-zA-Z_]\w*)\s+(of|in)\s+(this\.)?([a-zA-Z_]\w*)(.*)/gm).next();
+                    if(match) {
+                        let iteratorVarName = match.value[1];
+                        let iterationType   = match.value[2];
+                        let thisKeyword     = match.value[3];
+                        let iterableVarName = match.value[4];
+                        let iterableVarArgs = match.value[5];
+                        if((thisKeyword && contextExecutor.containsVariable(iterableVarName))
+                            || !thisKeyword) {
+                            let iterableVar = thisKeyword 
+                                ? contextExecutor.getVariable(iterableVarName).value
+                                : eval(iterableVarName+iterableVarArgs);
+                            if(iterableVar) {
+                                const savedVariable = contextExecutor.getVariable(iteratorVarName);
+                                let frag = document.createDocumentFragment();
+                                if(iterationType == 'of') {
+                                    for(let it of iterableVar) {
+                                        contextExecutor.setNewVariable(iteratorVarName, it);
+                                        let elemIt = document.createElement('div');
+                                        elemIt.innerHTML = html;
+                                        processComponent(elemIt, contextExecutor);
+                                        frag.appendChild(elemIt);
+                                    }
+                                } else {
+                                    for(let it in iterableVar) {
+                                        contextExecutor.setNewVariable(iteratorVarName, it);
+                                        let elemIt = document.createElement('div');
+                                        elemIt.innerHTML = html;
+                                        processComponent(elemIt, contextExecutor);
+                                        frag.appendChild(elemIt);
+                                    }
+                                }
+                                component.replaceChildren(frag);
+                                contextExecutor.setObjVariable(iteratorVarName, savedVariable);
+                            }
+                            if(thisKeyword)
+                                contextExecutor.addVariableUpdateClient(component, iterableVarName);
+                        }
+                    }
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            } 
+            // fetch html content asynchronously
+            else if(attribute.name.indexOf('fetch-async') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'fetch-async')
+                    continue;
+                component.dataset['nez_current'] = 'fetch-async';
+                if(attribute.value.length > 2) {
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    if(!componentInitialized)
+                        component.dataset['nez_html'] = component.innerHTML;
+                    else
+                        component.innerHTML = component.dataset['nez_html'];
+                    const updateHtml = function(html) {
+                        const nez_current = component.dataset['nez_current'];
+                        component.dataset['nez_current'] = 'fetch-async';
+                        if(html === undefined)
+                            html = component.dataset['nez_html'];
+                        // clear child node dataset buffer
+                        const dataSetKey = 'nez_child';
+                        for(let i = 0; component.dataset[dataSetKey+i] !== undefined; i++)
+                            delete component.dataset[dataSetKey+i];
+                        component.innerHTML = html;
+                        for(let child of component.children) {
+                            if(child.getAttribute(child.attributes.getNamedItem('nez')) !== undefined)
+                                processComponent(child, contextExecutor);
+                        };
+                        findAndAddUpdateClients(code, component, contextExecutor);
+                        if(!nez_current) 
+                            delete component.dataset['nez_current']; 
+                        else
+                            component.dataset['nez_current'] = nez_current;
+                    };
+                    contextExecutor.executeAsync(code, component)
+                    .then(function(html) {
+                        updateHtml(html);
+                    })
+                    .catch(function(error_) {
+                        console.error(error_);
+                        updateHtml(error_);
+                    });
+                    if(!nez_current) 
+                        delete component.dataset['nez_current']; 
+                    else
+                        component.dataset['nez_current'] = nez_current;
+                }
+            } 
+            // fetch html content synchronously
+            else if(attribute.name.indexOf('fetch-sync') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'fetch-sync')
+                    continue;
+                component.dataset['nez_current'] = 'fetch-sync';
+                if(attribute.value.length > 2) {
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    if(!componentInitialized)
+                        component.dataset['nez_html'] = component.innerHTML;
+                    else
+                        component.innerHTML = component.dataset['nez_html'];
+                    const html = await contextExecutor.executeAsync(code, component);
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    component.innerHTML = html;
+                    for(let child of component.children) {
+                        if(child.getAttribute(child.attributes.getNamedItem('nez')) !== undefined)
+                            processComponent(child, contextExecutor);
+                    };
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            } 
+            // set html content
+            else if(attribute.name.indexOf('html') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'html')
+                    continue;
+                component.dataset['nez_current'] = 'html';
+                if(attribute.value.length > 2) {
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    if(!componentInitialized)
+                        component.dataset['nez_html'] = component.innerHTML;
+                    else
+                        component.innerHTML = component.dataset['nez_html'];
+                    let html = contextExecutor.execute(code, component);
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    if(html === undefined)
+                        html = component.dataset['nez_html'];
+                    // clear child node dataset buffer
+                    const dataSetKey = 'nez_child';
+                    for(let i = 0; component.dataset[dataSetKey+i] !== undefined; i++)
+                        delete component.dataset[dataSetKey+i];
+                    component.innerHTML = html;
+                    for(let child of component.children) {
+                        if(child.getAttribute(child.attributes.getNamedItem('nez')) !== undefined)
+                            processComponent(child, contextExecutor);
+                    };
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            } 
+            // get declared variables asynchronously
+            else if(attribute.name.indexOf('let-async-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const varName = attribute.name.substring(10);
+                if(varName.length > 0) {
+                    const nez_current = component.dataset['nez_current'];
+                    if(nez_current === 'let-async')
+                        continue;
+                    component.dataset['nez_current'] = 'let-async';
+                    const setVariable = contextExecutor.getVariable(varName);
+                    if(setVariable)
+                        savedVariables.add(setVariable);
+                    const newVariable = contextExecutor.setNewVariable(varName, undefined);
+                    scopeVariables.add(newVariable);
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    const updateVar = function(varValue) {
+                        if(varValue === undefined && newVariable.value === undefined)
+                            return;
+                        const setVariable = contextExecutor.getVariable(varName);
+                        const nez_current = component.dataset['nez_current'];
+                        component.dataset['nez_current'] = 'let-async';
+                        contextExecutor.setObjVariable(newVariable);
+                        contextExecutor.setVariable(varName, varValue);
+                        if(setVariable && setVariable !== newVariable)
+                            contextExecutor.setObjVariable(setVariable);
+                        else 
+                            contextExecutor.removeVariable(varName);
+                        if(!nez_current) 
+                            delete component.dataset['nez_current']; 
+                        else
+                            component.dataset['nez_current'] = nez_current;
+                    };
+                    contextExecutor.executeAsync(code, component)
+                    .then(function(varValue) {
+                        updateVar(varValue);
+                    })
+                    .catch(function(error_) {
+                        console.error(error_);
+                        updateVar(error_);
+                    });
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    if(!nez_current) 
+                        delete component.dataset['nez_current']; 
+                    else
+                        component.dataset['nez_current'] = nez_current;
+                }
+            } 
+            // get declared variables synchronously
+            else if(attribute.name.indexOf('let-sync-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const varName = attribute.name.substring(9);
+                if(varName.length > 0) {
+                    const nez_current = component.dataset['nez_current'];
+                    if(nez_current === 'let-sync')
+                        continue;
+                    component.dataset['nez_current'] = 'let-sync';
+                    const setVariable = contextExecutor.getVariable(varName);
+                    if(setVariable)
+                        savedVariables.add(setVariable);
+                    contextExecutor.setNewVariable(varName, undefined);
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    const varValue = await contextExecutor.executeAsync(code, component);
+                    contextExecutor.setNewVariable(varName, varValue);
+                    if(!nez_current) 
+                        delete component.dataset['nez_current']; 
+                    else
+                        component.dataset['nez_current'] = nez_current;
+                }
+            } 
+            // get declared variables
+            else if(attribute.name.indexOf('let-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const varName = attribute.name.substring(4);
+                if(varName.length > 0) {
+                    const nez_current = component.dataset['nez_current'];
+                    if(nez_current === 'let')
+                        continue;
+                    component.dataset['nez_current'] = 'let';
+                    const varNotString = attribute.value.charAt(0) === '{';
+                    const code = attribute.value.substring(1, attribute.value.length-1);
+                    const varValue = varNotString
+                        ? contextExecutor.execute(code, component)
+                        : attribute.value;
+                    const setVariable = contextExecutor.getVariable(varName);
+                    if(setVariable)
+                        savedVariables.add(setVariable);
+                    contextExecutor.setNewVariable(varName, varValue);
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    if(!nez_current) 
+                        delete component.dataset['nez_current']; 
+                    else
+                        component.dataset['nez_current'] = nez_current;
+                }
+            }
+            // process events
+            else if(attribute.name.indexOf('nez-on-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'nez-on')
+                    continue;
+                component.dataset['nez_current'] = 'nez-on';
+                const eventName = attribute.name.substring(7);
+                if(eventName.length > 0) {
+                    const eventCode = attribute.value.substring(1, attribute.value.length-1);
+                    component.addEventListener(eventName, function(event) {
+                        contextExecutor.executeEvent(eventCode, event, component);
+                        const variableNames = eventCode.match(/this\.[a-zA-Z_][\w.]*/gs);
+                        if(variableNames) {
+                            const variableNamesSet = new Set();
+                            for(let thisVariableName of variableNames)
+                                variableNamesSet.add(thisVariableName.substring(5));
+                            contextExecutor.reprocessUpdateClientComponents(variableNamesSet);
+                        }
+                    });
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            } 
+            // process data attributes
+            else if(attribute.name.indexOf('nez-data-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'nez-data')
+                    continue;
+                component.dataset['nez_current'] = 'nez-data';
+                // evaluate codes in attribute within context
+                const attributeName = attribute.name.substring(9).replaceAll(/-(\w)/g, function(m, w) { return w.toUpperCase(); });
+                const attributeData = attribute.value;
+                const outputText = attributeData.replaceAll(/\{(.+?)\}/gs, function(match_, code) {
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    const output = contextExecutor.execute(code, component);
+                    return typeof output != undefined ? output : undefined;
+                });
+                component.dataset[attributeName] = outputText;
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            }
+            // process attributes
+            else if(attribute.name.indexOf('nez-set-if-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'nez-set-if')
+                    continue;
+                component.dataset['nez_current'] = 'nez-set-if';
+                // evaluate codes in attribute within context
+                const attributeName = attribute.name.substring(11);
+                const attributeCondition = attribute.value;
+                const matches = attributeCondition.matchAll(/\{(.+?)\}/gs);
+                if(matches) {
+                    const match = matches.next();
+                    const code = match.value[1];
+                    const condition = contextExecutor.execute(code, component);
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    if(condition)
+                        component.setAttribute(attributeName, '');
+                    else 
+                        component.removeAttribute(attributeName);
+                }
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            }
+            // process attributes
+            else if(attribute.name.indexOf('nez-') === 0) {
+                if(componentInitialized && !componentUpdated)
+                    continue;
+                const nez_current = component.dataset['nez_current'];
+                if(nez_current === 'nez')
+                    continue;
+                component.dataset['nez_current'] = 'nez';
+                // evaluate codes in attribute within context
+                const attributeName = attribute.name.substring(4);
+                const attributeData = attribute.value;
+                const outputText = attributeData.replaceAll(/\{(.+?)\}/gs, function(match_, code) {
+                    const output = contextExecutor.execute(code, component);
+                    findAndAddUpdateClients(code, component, contextExecutor);
+                    return typeof output != undefined ? output : undefined;
+                });
+                component.setAttribute(attributeName, outputText);
+                if(!nez_current) 
+                    delete component.dataset['nez_current']; 
+                else
+                    component.dataset['nez_current'] = nez_current;
+            }
+        }
+        if(componentUpdated) {
+            // process contents
+            let childIndex = 0;
+            for(let child of component.childNodes) {
+                // text content
+                if(!(child instanceof HTMLElement)) {
+                    if(child.data 
+                        && child.nodeName !== '#comment'
+                        && !(child.nodeName === '#text' && child.data.search(/^\s*$/gs) !== -1)) 
+                    {
+                        // save component child node data to parent data-set for the first time
+                        const dataSetIndex = 'nez_child'+childIndex;
+                        if(!component.dataset[dataSetIndex])
+                            component.dataset[dataSetIndex] = child.data;
+                        const childData = component.dataset[dataSetIndex];
+                        child.data = nez.zeroWidthWhiteSpace;
+                        // evaluate codes within context
+                        let outputText = childData;
+                        if(!component.attributes.getNamedItem('escape')) 
+                        {
+                            outputText = childData.replaceAll(/\{(.+?)\}/gs, function(match_, code) {
+                                const output = contextExecutor.execute(code, childData);
+                                findAndAddUpdateClients(code, component, contextExecutor);
+                                return output !== undefined ? output : nez.zeroWidthWhiteSpace;
+                            });
+                        }
+                        child.data = outputText;
+                    }
+                // html element
+                } else { 
+                    const nez_current = component.dataset['nez_current'];
+                    if(nez_current === 'children')
+                        continue;
+                    component.dataset['nez_current'] = 'children';
+                    if(child.attributes.getNamedItem('nez'))
+                        processComponent(child, contextExecutor);
+                    if(!nez_current) 
+                        delete component.dataset['nez_current']; 
+                    else
+                        component.dataset['nez_current'] = nez_current;
+                }
+                childIndex++;
+            }
+        }
+        for(savedVariable of savedVariables)
+            contextExecutor.setObjVariable(savedVariable);
+        for(scopeVariable of scopeVariables)
+            contextExecutor.removeVariable(scopeVariable.name);
+        component.dataset['nez_updated'] = 'false';
+    };
+    this.processComponent    = processComponent;
+    this.process             = function(component) {
+        processComponent(component, this_.contextExecutor);
+    };
+    this.set = function(variableName, variableValue) {
+        this_.contextExecutor.setVariable(variableName, variableValue);
+        return variableValue;
+    };
+    this.updateRootComponents = function() {
+        document.querySelectorAll('[nez-root]').forEach(function(component) {
+            this_.process(component);
+        });
+    };
+    this.startObserving = function() {
+        this_.observer.startObserving();
+    };
+    this.stopObserving = function() {
+        this_.observer.stopObserving();
+    };
+    this.sleep = function(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    };
+    this.fetchTextIds = new Map();
+    this.fetchJsonIds = new Map();
+    this.fetchText = async function(url, options, delay, id) {
+        if(id === undefined)
+            id = url;
+        const setUrl = this_.fetchTextIds.get(id);
+        if(setUrl != url) {
+            this_.fetchTextIds.set(id, url);
+            let response = await (fetch(url, options)
+            .then(function(response) {
+                if(response.status === 200)
+                    return response.text();
+                else
+                    return new FetchError(url, response.status, response.statusText);
+            })
+            .catch(function(error) {
+                return new FetchError(url, 0, error);
+            }));
+            if(delay) 
+                await nez.sleep(delay);
+            this_.fetchTextIds.delete(id);
+            if(response instanceof FetchError)
+                throw response;
+            return response;
+        } else {
+            // console.warn('fetchText: ignoring repeated fetch with id `'+id+'` and url `'+url+'`');
+        }
+        return undefined;
+    };
+    this.fetchJson = async function(url, options, delay, id) {
+        if(id === undefined)
+            id = url;
+        if(this_.fetchJsonIds.get(id) !== url) {
+            this_.fetchJsonIds.set(id, url);
+            const response = await (fetch(url, options)
+            .then(function(response) {
+                if(response.status === 200)
+                    return response.json();
+                else
+                    return new FetchError(url, response.status, response.statusText);
+            })
+            .catch(function(error) {
+                return new FetchError(url, 0, error);
+            }));
+            if(delay) 
+                await nez.sleep(delay);
+            this_.fetchJsonIds.delete(id);
+            if(response instanceof FetchError)
+                throw response;
+            return response;
+        } else {
+            // console.warn('fetchJson: ignoring repeated fetch with id `'+id+'` and url `'+url+'`');
+        }
+        return undefined;
+    };
+    this.range =  function(start, end, step) {
+        let start_ = start;
+        let end_   = end;
+        let step_  = step !== undefined && step > 0 ? step : 1;
+        let count_ = (end_ - start_) / step_;
+        if(arguments.length === 1) {
+            start_ = 0;
+            end_   = start;
+            step_  = 1;
+            count_ = (end_ - start_) / step_;
+        }
+        return Array(count_).fill().map(function(e, i) { return start_+i*step_; });
+    };
+    this.escape = function(text) {
+        return text.replaceAll(/([}{])/gm, '\\$1');
+    };
+    const formatJson = function(json, dontQuoteKeys, indent, tab, newLine) {
+        if(json === undefined)
+            return undefined;
+        let  jsonStr = 'null';
+        if(json) {
+            indent  = indent  !== undefined ? indent : '';
+            tab     = tab     !== undefined ? tab : "    ";
+            newLine = newLine !== undefined ? newLine : "\n";
+            const formatJsonValue = function(value) {
+                if(value === undefined || value === null) {
+                    return 'null';
+                } else if(typeof value === 'boolean' || value instanceof Boolean) {
+                    return value ? 'true' : 'false';
+                } else if(typeof value === 'number' || value instanceof Number) {
+                    return value;
+                } else if(value instanceof String) {
+                    return '"'+value+'"';
+                } else if(value instanceof Array) {
+                    return formatJson(value, dontQuoteKeys, indent+tab, tab, newLine);
+                } else if(value instanceof Object) {
+                    return formatJson(value, dontQuoteKeys, indent+tab, tab, newLine);
+                } else {
+                    return '"'+value+'"';
+                }
+            };
+            const newLineJsonValue = function(value) {
+                if(value === undefined || value === null) {
+                    return false;
+                } else if(typeof value === 'boolean' || value instanceof Boolean) {
+                    return false;
+                } else if(typeof value === 'number' || value instanceof Number) {
+                    return false;
+                } else if(value instanceof String) {
+                    return false;
+                } else if(value instanceof Array) {
+                    return true;
+                } else if(value instanceof Object) {
+                    return true;
+                } else {
+                    return true;
+                }
+            };
+            if(json instanceof Array) {
+                jsonStr = '[';
+                const entries = json;
+                if(entries.length > 0) {
+                    const newLineElems = newLineJsonValue(entries[0]);
+                    jsonStr += newLineElems ? newLine : '';
+                    for(let i = 0; i < entries.length; i++) {
+                        const value = entries[i]; 
+                        jsonStr += newLineElems ? indent+tab : '';
+                        jsonStr += formatJsonValue(value);
+                        jsonStr += i < entries.length-1 ? ',' : '';
+                        jsonStr += newLineElems ? newLine : '';
+                    }
+                    jsonStr += newLineElems ? indent : '';
+                }
+                jsonStr += ']';
+            } else if(json instanceof Object) {
+                jsonStr = '{';
+                const entries = Object.entries(json);
+                if(entries.length > 0) {
+                    jsonStr += newLine;
+                    for(let i = 0; i < entries.length; i++) {
+                        const entry = entries[i];
+                        const key   = entry[0];
+                        const value = entry[1];
+                        jsonStr += indent+tab;
+                        jsonStr += dontQuoteKeys ? key : '"'+key+'"';
+                        jsonStr += ': ';
+                        jsonStr += formatJsonValue(value);
+                        jsonStr += i < entries.length-1 ? ',' : '';
+                        jsonStr += newLine;
+                    }
+                    jsonStr += indent;
+                }
+                jsonStr += '}';
+            } else {
+                jsonStr = formatJsonValue(json);
+            }
+        }
+        return jsonStr;
+    };
+    this.formatJson = formatJson;
+    this.formatJsonAsync = async function(asyncJson, dontQuoteKeys, indent, tab, newLine) {
+        return asyncJson.then(function(json) {
+            // console.log(json);
+            return formatJson(json, dontQuoteKeys, indent, tab, newLine);
+        });
+    };
+    this.domEventListener = undefined;
+    this.updateOnLoad = function() {
+        if(this_.domEventListener === undefined) {
+            this_.domEventListener = function() {
+                this_.updateRootComponents();
+            };
+            document.addEventListener('DOMContentLoaded', this_.domEventListener);
+        }
+    };
+    this.cancelUpdateOnLoad = function() {
+        if(this_.domEventListener !== undefined) {
+            document.removeEventListener('DOMContentLoaded', this_.domEventListener);
+            this_.domEventListener = undefined;
+        }
+    };
+    this.start = function() {
+        this_.startObserving();
+        this_.updateOnLoad();
+    };
+    this.stop = function() {
+        this_.stopObserving();
+        this_.cancelUpdateOnLoad();
+    };
+    return this;
+};
+
+const nez = new Nez();
+nez.start();
+
